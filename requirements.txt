@@ -4,3 +4,6 @@ openpyxl
 plotly
 biopython
 matplotlib
+filetype
+pyfaidx
+git+https://github.com/arpcard/rgi.git
