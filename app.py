@@ -5,72 +5,46 @@ from pathlib import Path
 import subprocess
 import re
 from textwrap import wrap
+import shutil
 
-
-# =========================
-# App configuration
-# =========================
 
 st.set_page_config(page_title="AMR-Intel", layout="wide")
 
-BASE_DIR = Path("D:/AMR_App")
+BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 RESULT_DIR = BASE_DIR / "results"
 CARD_DB_DIR = BASE_DIR / "card_database"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_DIR.mkdir(parents=True, exist_ok=True)
+CARD_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 st.title("AMR-Intel: Genome-Based Antimicrobial Resistance Prediction App")
 
 st.markdown(
     """
-    This app accepts bacterial genome FASTA files and predicts antimicrobial resistance
-    using a genome-to-protein workflow:
+    This app predicts antimicrobial resistance from bacterial genome FASTA files using:
 
     **Genome FASTA → FASTA cleaning → Prodigal protein prediction → CARD-RGI protein-mode AMR screening**
+
+    Note: First run may take longer because CARD database setup may be required.
     """
 )
 
 
-# =========================
-# Helper functions
-# =========================
-
 def safe_sample_name(name):
-    """
-    Convert sample name into a safe filename.
-    """
     name = name.strip()
     name = re.sub(r"[^A-Za-z0-9_]+", "_", name)
     return name if name else "sample"
 
 
-def win_to_wsl(path):
-    """
-    Convert Windows path D:/AMR_App/... to WSL path /mnt/d/AMR_App/...
-    """
-    path = str(path).replace("\\", "/")
-    path = path.replace("D:", "/mnt/d")
-    return path
-
-
 def clean_genome_fasta(input_path, output_path):
-    """
-    Clean genome FASTA for downstream Prodigal/RGI use.
-
-    Actions:
-    - Removes problematic NCBI headers
-    - Writes simple headers: >c1, >c2, etc.
-    - Keeps only A, T, G, C, N
-    """
     records = []
     current_seq = []
 
     with open(input_path, "r", errors="ignore") as f:
         for line in f:
             line = line.strip()
-
             if not line:
                 continue
 
@@ -93,21 +67,78 @@ def clean_genome_fasta(input_path, output_path):
                 f.write(part + "\n")
 
     total_bases = sum(len(seq) for seq in records)
-
     return len(records), total_bases
 
 
+def run_command(command, cwd=None):
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True
+    )
+    return result
+
+
+def check_backend_tools():
+    tools = {
+        "prodigal": shutil.which("prodigal"),
+        "blastn": shutil.which("blastn"),
+        "diamond": shutil.which("diamond"),
+        "rgi": shutil.which("rgi"),
+    }
+    return tools
+
+
+@st.cache_resource(show_spinner=True)
+def setup_card_database():
+    localdb_card = CARD_DB_DIR / "localDB" / "card.json"
+
+    if localdb_card.exists():
+        return True, "CARD localDB already exists."
+
+    download_file = CARD_DB_DIR / "card_data.tar.bz2"
+
+    if not download_file.exists():
+        cmd_download = "wget https://card.mcmaster.ca/latest/data -O card_data.tar.bz2"
+        result = run_command(cmd_download, cwd=CARD_DB_DIR)
+        if result.returncode != 0:
+            return False, result.stderr
+
+    cmd_extract = "tar -xvjf card_data.tar.bz2"
+    result = run_command(cmd_extract, cwd=CARD_DB_DIR)
+    if result.returncode != 0:
+        return False, result.stderr
+
+    card_json_files = list(CARD_DB_DIR.rglob("card.json"))
+
+    if not card_json_files:
+        return False, "card.json was not found after extracting CARD data."
+
+    card_json = card_json_files[0]
+
+    cmd_load = f"rgi load --card_json {card_json} --local"
+    result = run_command(cmd_load, cwd=CARD_DB_DIR)
+
+    if result.returncode != 0:
+        cmd_load_old = f"rgi load -i {card_json} --local"
+        result_old = run_command(cmd_load_old, cwd=CARD_DB_DIR)
+
+        if result_old.returncode != 0:
+            return False, result.stderr + "\n" + result_old.stderr
+
+    if localdb_card.exists():
+        return True, "CARD database loaded successfully."
+
+    return False, "RGI load finished, but localDB/card.json was not found."
+
+
 def read_rgi_table(file_path):
-    """
-    Read CARD-RGI tab-separated output.
-    """
     return pd.read_csv(file_path, sep="\t")
 
 
 def summarize_rgi(df):
-    """
-    Display RGI result summary, charts, and Excel download.
-    """
     st.success("AMR result loaded successfully.")
 
     st.subheader("Raw RGI Result Table")
@@ -170,7 +201,6 @@ def summarize_rgi(df):
             y="Count",
             title="Distribution of predicted AMR drug classes"
         )
-
         st.plotly_chart(fig, width="stretch")
 
     if mech_col:
@@ -184,7 +214,6 @@ def summarize_rgi(df):
             values="Count",
             title="Distribution of predicted resistance mechanisms"
         )
-
         st.plotly_chart(fig2, width="stretch")
 
     st.subheader("Download Excel Report")
@@ -201,22 +230,14 @@ def summarize_rgi(df):
         )
 
 
-# =========================
-# Sidebar/status information
-# =========================
+st.sidebar.header("Backend status")
 
-st.sidebar.header("AMR-Intel Setup")
-st.sidebar.write("Required backend tools:")
-st.sidebar.write("1. WSL Ubuntu")
-st.sidebar.write("2. Conda environment: rgi_env")
-st.sidebar.write("3. Prodigal")
-st.sidebar.write("4. CARD-RGI 6.0.5")
-st.sidebar.write("5. CARD localDB")
-
-
-# =========================
-# Analysis mode
-# =========================
+tools = check_backend_tools()
+for tool, path in tools.items():
+    if path:
+        st.sidebar.success(f"{tool}: found")
+    else:
+        st.sidebar.error(f"{tool}: not found")
 
 analysis_mode = st.radio(
     "Select analysis mode",
@@ -227,10 +248,6 @@ analysis_mode = st.radio(
 )
 
 
-# =========================
-# Mode 1: Upload existing RGI result
-# =========================
-
 if analysis_mode == "Upload existing RGI result file":
 
     uploaded_result = st.file_uploader(
@@ -239,7 +256,6 @@ if analysis_mode == "Upload existing RGI result file":
     )
 
     if uploaded_result is not None:
-
         result_path = RESULT_DIR / uploaded_result.name
 
         with open(result_path, "wb") as f:
@@ -257,21 +273,12 @@ if analysis_mode == "Upload existing RGI result file":
             st.error(f"Could not read uploaded RGI file: {e}")
 
 
-# =========================
-# Mode 2: Genome FASTA analysis
-# =========================
-
 if analysis_mode == "Upload genome FASTA and run AMR prediction":
 
     st.info(
         """
-        This mode runs Prodigal and CARD-RGI through WSL Ubuntu.
-
-        Please ensure that:
-        - `rgi_env` exists in WSL
-        - RGI version is 6.0.5
-        - CARD database is loaded in `D:/AMR_App/card_database/localDB`
-        - Prodigal is available inside `rgi_env`
+        Upload a bacterial genome FASTA file. The app will clean the FASTA, predict proteins using Prodigal,
+        remove terminal stop symbols, and run CARD-RGI in protein mode.
         """
     )
 
@@ -286,6 +293,20 @@ if analysis_mode == "Upload genome FASTA and run AMR prediction":
 
     if uploaded_fasta is not None and run_button:
 
+        if not tools["prodigal"] or not tools["rgi"]:
+            st.error("Required backend tools are missing. Please check requirements.txt and packages.txt.")
+            st.stop()
+
+        st.info("Checking/loading CARD database. This may take time during the first run.")
+        ok, message = setup_card_database()
+
+        if not ok:
+            st.error("CARD database setup failed.")
+            st.code(message)
+            st.stop()
+
+        st.success(message)
+
         sample_name = safe_sample_name(sample_name_input)
 
         original_fasta = UPLOAD_DIR / f"{sample_name}_original.fasta"
@@ -297,13 +318,11 @@ if analysis_mode == "Upload genome FASTA and run AMR prediction":
         rgi_output_prefix = RESULT_DIR / f"{sample_name}_rgi"
         rgi_txt = RESULT_DIR / f"{sample_name}_rgi.txt"
 
-        # Save uploaded genome
         with open(original_fasta, "wb") as f:
             f.write(uploaded_fasta.getbuffer())
 
         st.success("Genome uploaded successfully.")
 
-        # Clean FASTA
         try:
             record_count, total_bases = clean_genome_fasta(
                 original_fasta,
@@ -322,51 +341,33 @@ if analysis_mode == "Upload genome FASTA and run AMR prediction":
             st.error(f"FASTA cleaning failed: {e}")
             st.stop()
 
-        # Convert Windows paths to WSL paths
-        wsl_cleaned_fasta = win_to_wsl(cleaned_fasta)
-        wsl_protein_faa = win_to_wsl(protein_faa)
-        wsl_protein_clean_faa = win_to_wsl(protein_clean_faa)
-        wsl_rgi_output_prefix = win_to_wsl(rgi_output_prefix)
-        wsl_card_db_dir = win_to_wsl(CARD_DB_DIR)
-
-        # Remove previous output files for same sample
         for old_file in RESULT_DIR.glob(f"{sample_name}_rgi*"):
             try:
                 old_file.unlink()
             except Exception:
                 pass
 
-        # WSL bash command
         bash_command = (
-            f"source ~/miniconda3/etc/profile.d/conda.sh && "
-            f"conda activate rgi_env && "
             f"prodigal "
-            f"-i {wsl_cleaned_fasta} "
-            f"-a {wsl_protein_faa} "
+            f"-i {cleaned_fasta} "
+            f"-a {protein_faa} "
             f"-o /dev/null "
             f"-p single && "
-            f"tr -d '*' < {wsl_protein_faa} > {wsl_protein_clean_faa} && "
-            f"cd {wsl_card_db_dir} && "
+            f"tr -d '*' < {protein_faa} > {protein_clean_faa} && "
+            f"cd {CARD_DB_DIR} && "
             f"rgi main "
-            f"-i {wsl_protein_clean_faa} "
-            f"-o {wsl_rgi_output_prefix} "
+            f"-i {protein_clean_faa} "
+            f"-o {rgi_output_prefix} "
             f"-t protein "
             f"--local "
             f"--clean"
         )
 
-        wsl_command = ["wsl", "bash", "-lc", bash_command]
-
         st.subheader("Running backend command")
-        st.code(" ".join(wsl_command))
+        st.code(bash_command)
 
         with st.spinner("Running Prodigal and CARD-RGI. Please wait..."):
-            result = subprocess.run(
-                wsl_command,
-                shell=False,
-                capture_output=True,
-                text=True
-            )
+            result = run_command(bash_command)
 
         if result.returncode != 0:
             st.error("AMR prediction failed.")
