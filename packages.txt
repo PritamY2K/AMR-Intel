@@ -1,0 +1,6 @@
+prodigal
+ncbi-blast+
+diamond-aligner
+wget
+curl
+bzip2
