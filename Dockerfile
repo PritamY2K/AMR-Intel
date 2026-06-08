@@ -17,9 +17,9 @@ RUN cd /app/card_database && \
     amrfinder -u && \
     abricate --setupdb
 
-EXPOSE 8501
+EXPOSE 7860
 ENV PATH=/opt/conda/bin:$PATH
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-CMD ["streamlit", "run", "app_cloud.py", "--server.address=0.0.0.0", "--server.port=8501"]
+CMD ["streamlit", "run", "app_cloud.py", "--server.address=0.0.0.0", "--server.port=7860"]
