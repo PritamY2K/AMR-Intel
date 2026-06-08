@@ -1,0 +1,22 @@
+name: base
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.10
+  - streamlit
+  - pandas
+  - plotly
+  - openpyxl
+  - requests
+  - wget
+  - bzip2
+  - rgi=6.0.5
+  - ncbi-amrfinderplus
+  - prodigal
+  - abricate
+  - ncbi-datasets-cli
+  - shovill
+  - fastp
+  - spades
